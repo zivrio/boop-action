@@ -1,0 +1,77 @@
+name: Boop Code Quality
+description: Scan your code and run quality gate checks with Boop
+author: zivrio
+
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  api-key:
+    description: >
+      Boop account API key. Use project-key for CI — it is scoped to a
+      single project and is the recommended credential for repositories.
+    required: false
+  project-key:
+    description: >
+      Project-scoped API key (from boop project keys). Preferred over
+      api-key in CI: grants access only to this project's scan and check
+      operations.
+    required: false
+  project-id:
+    description: >
+      Boop project ID. Only needed if .boop/config.json is not committed
+      to the repository.
+    required: false
+  category:
+    description: "Check category: security, complexity, quality, or all"
+    required: false
+    default: all
+  scan:
+    description: Run boop scan before checks (set to 'false' to skip)
+    required: false
+    default: 'true'
+  fail-on:
+    description: "Exit code 1 on: errors, warnings, or never"
+    required: false
+    default: errors
+
+runs:
+  using: composite
+  steps:
+    - name: Install boop CLI
+      shell: bash
+      run: |
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64)  ARCH=amd64  ;;
+          aarch64|arm64) ARCH=arm64 ;;
+        esac
+        URL="https://github.com/zivrio/boop-cli-releases/releases/latest/download/boop_${OS}_${ARCH}"
+        curl -fsSL "$URL" -o /usr/local/bin/boop
+        chmod +x /usr/local/bin/boop
+        boop version
+
+    - name: Scan
+      if: inputs.scan == 'true'
+      shell: bash
+      env:
+        BOOP_API_KEY: ${{ inputs.project-key || inputs.api-key }}
+        BOOP_PROJECT_ID: ${{ inputs.project-id }}
+      run: |
+        ARGS=""
+        [ -n "$BOOP_PROJECT_ID" ] && ARGS="--project-id $BOOP_PROJECT_ID"
+        boop scan $ARGS
+
+    - name: Check
+      shell: bash
+      env:
+        BOOP_API_KEY: ${{ inputs.project-key || inputs.api-key }}
+        BOOP_PROJECT_ID: ${{ inputs.project-id }}
+      run: |
+        ARGS="${{ inputs.category }}"
+        [ -n "$BOOP_PROJECT_ID" ] && ARGS="$ARGS --project-id $BOOP_PROJECT_ID"
+        [ "${{ inputs.fail-on }}" = "warnings" ] && ARGS="$ARGS --strict"
+        [ "${{ inputs.fail-on }}" = "never" ] && ARGS="$ARGS" || true
+        boop check $ARGS
