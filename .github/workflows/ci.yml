@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    name: Validate action.yml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate action.yml syntax
+        run: |
+          python3 -c "import yaml, sys; yaml.safe_load(open('action.yml'))" \
+            && echo "action.yml is valid YAML"
+
+      - name: Check required fields
+        run: |
+          python3 - <<'EOF'
+          import yaml, sys
+          a = yaml.safe_load(open("action.yml"))
+          assert "name" in a, "missing: name"
+          assert "description" in a, "missing: description"
+          assert "runs" in a, "missing: runs"
+          assert "branding" in a, "missing: branding"
+          for k, v in a.get("inputs", {}).items():
+              assert "description" in v, f"input '{k}' missing description"
+          for k, v in a.get("outputs", {}).items():
+              assert "description" in v, f"output '{k}' missing description"
+          print("All checks passed")
+          EOF

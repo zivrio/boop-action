@@ -1,5 +1,5 @@
 name: Boop Code Quality
-description: Scan your code and run quality gate checks with Boop
+description: Scan your code and run quality gate checks with Boop — cloud-powered code intelligence.
 author: zivrio
 
 branding:
@@ -7,34 +7,56 @@ branding:
   color: blue
 
 inputs:
-  api-key:
-    description: >
-      Boop account API key. Use project-key for CI — it is scoped to a
-      single project and is the recommended credential for repositories.
-    required: false
   project-key:
     description: >
-      Project-scoped API key (from boop project keys). Preferred over
-      api-key in CI: grants access only to this project's scan and check
-      operations.
+      Project-scoped API key (recommended for CI). Grants access only to
+      this project's scan and check operations. Generate one with
+      `boop project keys`. Takes precedence over api-key.
+    required: false
+  api-key:
+    description: >
+      Full account API key. Use project-key instead when possible —
+      it limits blast radius if the secret is ever exposed.
     required: false
   project-id:
     description: >
-      Boop project ID. Only needed if .boop/config.json is not committed
-      to the repository.
+      Boop project ID (UUID). Only required if .boop/config.json is not
+      committed to the repository.
     required: false
   category:
-    description: "Check category: security, complexity, quality, or all"
+    description: >
+      Check category to run. One of: security, complexity, quality, all.
     required: false
     default: all
   scan:
-    description: Run boop scan before checks (set to 'false' to skip)
+    description: >
+      Whether to re-index changed files before running checks.
+      Set to 'false' to run checks against the existing index only
+      (faster, but results may be stale if code changed).
     required: false
     default: 'true'
   fail-on:
-    description: "Exit code 1 on: errors, warnings, or never"
+    description: >
+      Severity level that causes a non-zero exit code.
+      errors   — fail only on error-severity checks (default).
+      warnings — fail on warnings and errors (strict mode).
+      never    — always exit 0, even if checks fail (advisory only).
     required: false
     default: errors
+  version:
+    description: >
+      Boop CLI version to install. Defaults to 'latest'.
+      Pin to a specific version (e.g. '0.1.2') for reproducible builds.
+    required: false
+    default: latest
+
+outputs:
+  issues:
+    description: Total number of issues found across all checks.
+    value: ${{ steps.check.outputs.issues }}
+  result:
+    description: Overall result — 'passed' or 'failed'.
+    value: ${{ steps.check.outputs.result }}
 
 runs:
   using: composite
@@ -45,13 +67,19 @@ runs:
         OS=$(uname -s | tr '[:upper:]' '[:lower:]')
         ARCH=$(uname -m)
         case "$ARCH" in
-          x86_64)  ARCH=amd64  ;;
-          aarch64|arm64) ARCH=arm64 ;;
+          x86_64)        ARCH=amd64  ;;
+          aarch64|arm64) ARCH=arm64  ;;
         esac
-        URL="https://github.com/zivrio/boop-cli-releases/releases/latest/download/boop_${OS}_${ARCH}"
-        curl -fsSL "$URL" -o /usr/local/bin/boop
+
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          BASE_URL="https://github.com/zivrio/boop-cli-releases/releases/latest/download"
+        else
+          BASE_URL="https://github.com/zivrio/boop-cli-releases/releases/download/v${{ inputs.version }}"
+        fi
+
+        curl -fsSL "${BASE_URL}/boop_${OS}_${ARCH}" -o /usr/local/bin/boop
         chmod +x /usr/local/bin/boop
-        boop version
+        echo "Installed $(boop version)"
 
     - name: Scan
       if: inputs.scan == 'true'
@@ -65,6 +93,7 @@ runs:
         boop scan $ARGS
 
     - name: Check
+      id: check
       shell: bash
       env:
         BOOP_API_KEY: ${{ inputs.project-key || inputs.api-key }}
@@ -73,5 +102,20 @@ runs:
         ARGS="${{ inputs.category }}"
         [ -n "$BOOP_PROJECT_ID" ] && ARGS="$ARGS --project-id $BOOP_PROJECT_ID"
         [ "${{ inputs.fail-on }}" = "warnings" ] && ARGS="$ARGS --strict"
-        [ "${{ inputs.fail-on }}" = "never" ] && ARGS="$ARGS" || true
-        boop check $ARGS
+
+        set +e
+        OUTPUT=$(boop check $ARGS 2>&1)
+        EXIT_CODE=$?
+        set -e
+
+        echo "$OUTPUT"
+
+        ISSUES=$(echo "$OUTPUT" | grep -oP 'Found \K[0-9]+(?= issue)' || echo "0")
+        echo "issues=$ISSUES" >> "$GITHUB_OUTPUT"
+
+        if [ $EXIT_CODE -eq 0 ]; then
+          echo "result=passed" >> "$GITHUB_OUTPUT"
+        else
+          echo "result=failed" >> "$GITHUB_OUTPUT"
+          [ "${{ inputs.fail-on }}" != "never" ] && exit $EXIT_CODE
+        fi
